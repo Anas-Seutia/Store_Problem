@@ -1,4 +1,3 @@
-use rand::seq::SliceRandom;  // Import the trait required for the shuffle method
 use rand::{thread_rng, Rng};        // Import the thread_rng function for a random number generator
 use rand::prelude::*;
 use rand::distributions::{Distribution, WeightedIndex}; // Import the WeightedIndex function for weighted random selection
@@ -31,58 +30,49 @@ struct Population {
 #[derive(Debug)]
 struct GAParameters {
     mutation_probability: f64,
-    // ... other parameters
+    max_iterations: usize,
+    // ... other parameters as needed
+}
+
+impl GAParameters {
+    // Initialize default parameters for the GA
+    pub fn new(mutation_probability: f64, max_iterations: usize) -> Self {
+        GAParameters {
+            mutation_probability,
+            max_iterations,
+        }
+    }
+}
+
+struct GeneticAlgorithm {
+    population: Population,
+    conflict_graph: ConflictGraph,
+    params: GAParameters,
+    // ... any other fields as needed
 }
 
 // Genetic algorithm functions
 impl Chromosome {
 
-    // Function to initialize a chromosome with a randomised schedule with aid
-    fn initialize(operations: Vec<Operation>, conflict_graph: &ConflictGraph) -> Chromosome {
-        let mut shuffled_operations = operations.clone();
-        // Shuffle operations based on a simple heuristic (e.g., job_id)
-        shuffled_operations.shuffle(&mut thread_rng());
+    // Function to initialize a chromosome with a sequential schedule (worse case)
+    fn initialize(operations: Vec<Operation>) -> Chromosome {
+        let mut operations = operations.clone();
 
-        let mut machine_end_times = std::collections::HashMap::new();
-        let mut job_end_times = std::collections::HashMap::new();
-        
-        for operation in &mut shuffled_operations {
-            let machine_id = operation.machine_id;
-            let job_id = operation.job_id;
+        // Sorting by job_id and then machine_id, for example
+        operations.sort_by(|a, b| a.job_id.cmp(&b.job_id).then(a.machine_id.cmp(&b.machine_id)));
 
-            // Determine the earliest start time for this operation, based on machine availability
-            let mut start_time = machine_end_times.get(&machine_id).cloned().unwrap_or(0);
-
-            // Check for conflicts and adjust start time if necessary
-            for &(preceding_machine_id, conflicting_machine_id) in &conflict_graph.edges {
-                if preceding_machine_id == machine_id || conflicting_machine_id == machine_id {
-                    // The start time for the operation must be after the end time of the job it conflicts with
-                    let end_time_of_preceding_machine = machine_end_times.get(&preceding_machine_id).cloned().unwrap_or(0);
-                    let end_time_of_conflicting_machine = machine_end_times.get(&conflicting_machine_id).cloned().unwrap_or(0);
-
-                    if start_time < end_time_of_preceding_machine || start_time < end_time_of_conflicting_machine {
-                        // Adjust start time to after the preceding job has finished
-                        operation.start_time = std::cmp::max(Some(end_time_of_preceding_machine),Some(end_time_of_conflicting_machine));
-                        start_time = operation.start_time.unwrap();
-                    }
-                }
-            }
-
-            // If the start time has not been adjusted due to conflict, set it now
-            if operation.start_time.is_none() {
-                operation.start_time = Some(start_time);
-            }
-
-            // Update the end time for this job and machine
-            let end_time = operation.start_time.unwrap() + operation.processing_time;
-            machine_end_times.insert(machine_id, end_time);
-            job_end_times.insert(job_id, end_time);
+        // Assign start times sequentially
+        let mut current_time = 0;
+        for operation in &mut operations {
+            operation.start_time = Some(current_time);
+            current_time += operation.processing_time;
         }
 
-        // The makespan is the maximum end time among all jobs
-        let makespan = job_end_times.values().max().cloned().unwrap_or(0);
+        // The makespan is the time when the last operation finishes
+        let makespan = operations.last().map(|op| op.start_time.unwrap() + op.processing_time).unwrap_or(0);
+
         Chromosome {
-            operations: shuffled_operations,
+            operations,
             makespan,
         }
     }
@@ -255,7 +245,6 @@ impl Chromosome {
                 .collect::<Vec<_>>();
             // Sort by start time
             times.sort_by_key(|k| k.0);
-            println!("times: {:?}", times);
             // Check for overlaps
             for pair in times.windows(2) {
                 if let &[(_, end_previous), (start_next, _)] = pair {
@@ -279,7 +268,6 @@ impl Chromosome {
             let mut times = times;
             // Sort by start time
             times.sort_by_key(|k| k.0);
-            println!("times: {:?}", times);
             // Check for overlaps
             for pair in times.windows(2) {
                 if let &[(_, end_previous), (start_next, _)] = pair {
@@ -301,7 +289,7 @@ impl Chromosome {
 impl Population {
     // Sort chromosomes by decreasing makespan (fitness)
     fn sort_by_fitness(&mut self) {
-        self.chromosomes.sort_by(|a, b| b.makespan.cmp(&a.makespan));
+        self.chromosomes.sort_by(|a, b| a.makespan.cmp(&b.makespan));
     }
 
     // Select a parent based on the ranking selection probability
@@ -313,64 +301,79 @@ impl Population {
     }
 
     // Replace a chromosome in the population
-    fn replace_chromosome(&mut self, new_chromosome: Chromosome, ga_params: &GAParameters) {
+    fn replace_chromosome(&mut self, new_chromosome: Chromosome) {
         let mut rng = rand::thread_rng();
         let median_rank = self.chromosomes.len() / 2;
         let replace_index = rng.gen_range(median_rank..self.chromosomes.len());
         self.chromosomes[replace_index] = new_chromosome;
     }
+}
+
+impl GeneticAlgorithm {
+    pub fn new(initial_population: Population, conflict_graph: ConflictGraph, params: GAParameters) -> Self {
+        GeneticAlgorithm {
+            population: initial_population,
+            conflict_graph,
+            params,
+        }
+    }
+
+    pub fn run(&mut self) {
+        for _ in 0..self.params.max_iterations {
+            self.population.sort_by_fitness();
     
-    // Selection and replacement procedure
-    fn selection_and_replacement(&mut self, conflict_graph: &ConflictGraph, ga_params: &GAParameters) {
-        self.sort_by_fitness();
-
-        let parent1 = self.select_parent();
-        let parent2 = self.select_parent();
-
-        // Assume we have a crossover function implemented
-        let (child1,child2) = Chromosome::one_point_crossover(&parent1, &parent2);
-        let (child3,child4) = (Chromosome::linear_order_crossover(&parent1, &parent2),Chromosome::linear_order_crossover(&parent2, &parent1));
-        let (child5,child6) = (Chromosome::order_crossover(&parent1, &parent2),Chromosome::order_crossover(&parent2, &parent1));
-
-        let children = vec![child1, child2, child3, child4, child5, child6];
-
-        let mut non_redundant_children = children.into_iter()
-            .filter(|child| !child.is_redundant(&conflict_graph))
-            .collect::<Vec<_>>();
-        // Randomly choose one child for mutation
-        let mut rng = rand::thread_rng();
-
-        // Ensure there are enough children to choose from
-        if non_redundant_children.len() >= 1 {
-            // Get random indices for the elements to mutate
-            let idx1 = (0..non_redundant_children.len()).choose(&mut rng).unwrap();
-            
-            // Mutate the child at idx1 with a certain probability
-            if rng.gen::<f64>() < ga_params.mutation_probability {
-                let mut child = non_redundant_children[idx1].clone();
-                child.swap_mutation();
-                if !child.is_redundant(&conflict_graph) {
-                    non_redundant_children[idx1] = child;
-                }
-            }
-            
-                if non_redundant_children.len() >= 2 {
-                    let idx2 = (0..non_redundant_children.len()).choose(&mut rng).unwrap();
-                    // Mutate the child at idx2 with a certain probability
-                    if rng.gen::<f64>() < ga_params.mutation_probability {
-                        let mut child = non_redundant_children[idx2].clone();
-                        child.move_mutation();
-                        if !child.is_redundant(&conflict_graph) {
-                            non_redundant_children[idx2] = child;
-                        }
+            let parent1 = self.population.select_parent();
+            let parent2 = self.population.select_parent();
+    
+            // Assume we have a crossover function implemented
+            let (child1,child2) = Chromosome::one_point_crossover(&parent1, &parent2);
+            let (child3,child4) = (Chromosome::linear_order_crossover(&parent1, &parent2),Chromosome::linear_order_crossover(&parent2, &parent1));
+            let (child5,child6) = (Chromosome::order_crossover(&parent1, &parent2),Chromosome::order_crossover(&parent2, &parent1));
+    
+            let children = vec![child1, child2, child3, child4, child5, child6];
+    
+            let mut non_redundant_children = children.into_iter()
+                .filter(|child| !child.is_redundant(&self.conflict_graph))
+                .collect::<Vec<_>>();
+            // Randomly choose one child for mutation
+            let mut rng = rand::thread_rng();
+    
+            // Ensure there are enough children to choose from
+            if non_redundant_children.len() >= 1 {
+                // Get random indices for the elements to mutate
+                let idx1 = (0..non_redundant_children.len()).choose(&mut rng).unwrap();
+                
+                // Mutate the child at idx1 with a certain probability
+                if rng.gen::<f64>() < self.params.mutation_probability {
+                    let mut child = non_redundant_children[idx1].clone();
+                    child.swap_mutation();
+                    if !child.is_redundant(&self.conflict_graph) {
+                        non_redundant_children[idx1] = child;
                     }
                 }
+                
+                    if non_redundant_children.len() >= 2 {
+                        let idx2 = (0..non_redundant_children.len()).choose(&mut rng).unwrap();
+                        // Mutate the child at idx2 with a certain probability
+                        if rng.gen::<f64>() < self.params.mutation_probability {
+                            let mut child = non_redundant_children[idx2].clone();
+                            child.move_mutation();
+                            if !child.is_redundant(&self.conflict_graph) {
+                                non_redundant_children[idx2] = child;
+                            }
+                        }
+                    }
+            }
+    
+            // Check if the child is not redundant and replace a chromosome in the population
+            for non_redundant_child in non_redundant_children {
+                self.population.replace_chromosome(non_redundant_child);
+            }
+
         }
 
-        // Check if the child is not redundant and replace a chromosome in the population
-        for non_redundant_child in non_redundant_children {
-            self.replace_chromosome(non_redundant_child, &ga_params);
-        }
+        // After the GA run, you might want to return the best solution found
+        // This could be the chromosome with the lowest makespan in the population
     }
 }
 
@@ -389,51 +392,76 @@ fn calculate_makespan(operations: &Vec<Operation>) -> usize {
     *machine_end_times.values().max().unwrap_or(&0)
 }
 
+fn generate_operations(num_jobs: usize, num_machines: usize, max_processing_time: usize) -> Vec<Operation> {
+    let mut rng = thread_rng();
+    let mut operations = Vec::new();
+
+    for job_id in 1..=num_jobs {
+        for machine_id in 1..=num_machines {
+            let processing_time = rng.gen_range(1..=max_processing_time);
+            operations.push(Operation { job_id, machine_id, processing_time, start_time: None });
+        }
+    }
+
+    operations
+}
+
+fn generate_conflict_graph(num_jobs: usize, num_conflicts: usize) -> ConflictGraph {
+    let mut rng = thread_rng();
+    let mut conflicts = Vec::new();
+
+    for _ in 0..num_conflicts {
+        let job1 = rng.gen_range(1..=num_jobs);
+        let mut job2 = rng.gen_range(1..=num_jobs);
+        while job1 == job2 {
+            job2 = rng.gen_range(1..=num_jobs);
+        }
+        conflicts.push((job1, job2));
+    }
+
+    ConflictGraph { edges: conflicts }
+}
+
 fn main() {
-    let operations = vec![
-        Operation { job_id: 1, machine_id: 1, processing_time: 3, start_time: None },
-        Operation { job_id: 1, machine_id: 2, processing_time: 2, start_time: None },
-        Operation { job_id: 1, machine_id: 3, processing_time: 2, start_time: None },
-        Operation { job_id: 2, machine_id: 1, processing_time: 3, start_time: None },
-        Operation { job_id: 2, machine_id: 2, processing_time: 2, start_time: None },
-        Operation { job_id: 2, machine_id: 3, processing_time: 1, start_time: None },
-        Operation { job_id: 3, machine_id: 1, processing_time: 1, start_time: None },
-        Operation { job_id: 3, machine_id: 2, processing_time: 1, start_time: None },
-        Operation { job_id: 3, machine_id: 3, processing_time: 2, start_time: None },
-    ];
+        // Configuration for generation
+    let num_jobs = 3; // For example
+    let num_machines = 3; // For example
+    let max_processing_time = 5; // For example
+    let num_conflicts = 2; // For example
 
-    let conflict_graph = ConflictGraph {
-        edges: vec![(1, 2), (1, 3)], // Assuming the edges represent job conflicts
-    };
+    // Generate operations and conflict graph
+    let operations = generate_operations(num_jobs, num_machines, max_processing_time);
+    let conflict_graph = generate_conflict_graph(num_jobs, num_conflicts);
 
-    let mut chromosome1 = Chromosome::initialize(operations.clone(), &conflict_graph);
-    let mut chromosome2 = Chromosome::initialize(operations.clone(), &conflict_graph);
-    println!("chromosome 1 is redundant: {:?}", chromosome1.is_redundant(&conflict_graph));
-    // println!("Chromosome: {:#?}", chromosome1);
-    println!("chromosome 2 is redundant: {:?}", chromosome2.is_redundant(&conflict_graph));
-    // println!("Chromosome: {:#?}", chromosome2);
+    // Initialize GA parameters
+    let ga_params = GAParameters::new(0.50, 10000); // Example: 10% mutation probability, 100 iterations
 
-    // Calculate the makespan for the chromosome
-    // chromosome1.makespan = chromosome1.calculate_makespan();
+    // Create an initial population
+    let mut initial_population = Population { chromosomes: Vec::new() };
 
-    let (mut child1,mut child2) = Chromosome::one_point_crossover(&chromosome1, &chromosome2);
-    let (mut child3,mut child4) = (Chromosome::linear_order_crossover(&chromosome1, &chromosome2),Chromosome::linear_order_crossover(&chromosome2, &chromosome1));
-    let (mut child5,mut child6) = (Chromosome::order_crossover(&chromosome1, &chromosome2),Chromosome::order_crossover(&chromosome2, &chromosome1));
-    // println!("Child 1: {:#?}", child1);
-    // println!("Child 2: {:#?}", child2);
+    // Assuming you have a function to generate a chromosome
+    for _ in 0..50 { // Example: start with a population of 50 chromosomes
+        let chromosome = Chromosome::initialize(operations.clone());
+        initial_population.chromosomes.push(chromosome);
+    }
 
-    println!("Child 1 is redundant: {:?}", child1.is_redundant(&conflict_graph));
-    println!("Child 2 is redundant: {:?}", child2.is_redundant(&conflict_graph));
-    println!("Child 3 is redundant: {:?}", child3.is_redundant(&conflict_graph));
-    println!("Child 4 is redundant: {:?}", child4.is_redundant(&conflict_graph));
-    println!("Child 5 is redundant: {:?}", child5.is_redundant(&conflict_graph));
-    println!("Child 6 is redundant: {:?}", child6.is_redundant(&conflict_graph));
+    // Create the Genetic Algorithm instance
+    let mut ga = GeneticAlgorithm::new(initial_population, conflict_graph, ga_params);
 
-    let mut child7 = chromosome1.clone();
-    child7.swap_mutation();
-    println!("Child 7 is redundant: {:?}", child7.is_redundant(&conflict_graph));
-    let mut child8 = chromosome1.clone();
-    child8.move_mutation();
-    println!("Child 8 is redundant: {:?}", child8.is_redundant(&conflict_graph));
+    let start_solution = ga.population.chromosomes.iter().min_by_key(|c| c.makespan);
+    if let Some(start_best) = start_solution {
+        // println!("Best Solution: {:#?}", start_best);
+        println!("Start Solution: {:#?}", start_best.makespan)
+    }
+
+    // Run the Genetic Algorithm
+    ga.run();
+
+    // After the run, you might want to display the best solution
+    let best_solution = ga.population.chromosomes.iter().min_by_key(|c| c.makespan);
+    if let Some(best) = best_solution {
+        // println!("Best Solution: {:#?}", best);
+        println!("Best Solution: {:#?}", best.makespan)
+    }
 }
 
