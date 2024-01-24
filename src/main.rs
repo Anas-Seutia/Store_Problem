@@ -419,6 +419,7 @@ fn main() {
         println!("Worst Solution: {:?}", start_best.makespan)
     }
 
+    println!("running!");
     ga.run();
 
     let best_solution = ga.population.chromosomes.iter().min_by_key(|c| c.makespan);
